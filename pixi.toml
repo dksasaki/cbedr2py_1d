@@ -1,0 +1,26 @@
+[workspace]
+name      = "cbed2py_1d"
+version   = "0.1.0"
+channels  = ["conda-forge"]
+platforms = ["linux-64"]
+
+[dependencies]
+# versions as in cbed_R2py, where the wrapper was first tested
+python      = "==3.11"
+numpy       = "==1.26.0"
+xarray      = "==2023.10.1"
+netcdf4     = "==1.6.5"
+pandas      = "*"
+rpy2        = "*"
+r-base      = "*"
+r-desolve   = "*"
+r-rootsolve = "*"
+ipython     = "*"
+
+[pypi-dependencies]
+cbed2py = { path = ".", editable = true }
+
+[tasks]
+# ReacTran and marelac are not on conda-forge: install them from CRAN into the pixi env
+setup-r = "Rscript -e \"install.packages(c('ReacTran', 'marelac'), repos='https://cloud.r-project.org')\""
+test    = "python tests/test_wrapper.py"

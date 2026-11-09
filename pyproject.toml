@@ -1,0 +1,15 @@
+[build-system]
+requires      = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name            = "cbed2py"
+version         = "0.1.0"
+description     = "Transient CBED sediment model (v2 coefficients) at a single point, wrapped from R with rpy2"
+readme          = "README.md"
+requires-python = ">=3.11"
+# Python and R dependencies are managed by pixi (pixi.toml)
+dependencies    = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["cbed2py"]          # includes cbed2py/model/*.R
