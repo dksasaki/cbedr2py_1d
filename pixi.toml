@@ -3,6 +3,7 @@ name      = "cbed2py_1d"
 version   = "0.1.0"
 channels  = ["conda-forge"]
 platforms = ["linux-64"]
+# platforms = ["osx-arm64"]
 
 [dependencies]
 # versions as in cbed_R2py, where the wrapper was first tested
