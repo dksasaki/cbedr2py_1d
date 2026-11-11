@@ -12,12 +12,17 @@ from .wrapper import (
     default_params,
     steady_state,
     run_transient,
-    FLAGS,
+    set_model,
+    get_model,
+    MODELS,
+    JPOC_MODE_PARS,
+    JPOC_MODES,
     FORCING,
     STATES,
     MODEL_DIR,
 )
 
 __all__ = ["default_params", "steady_state", "run_transient",
-           "FLAGS", "FORCING", "STATES", "MODEL_DIR"]
+           "set_model", "get_model", "MODELS",
+           "JPOC_MODE_PARS", "JPOC_MODES", "FORCING", "STATES", "MODEL_DIR"]
 __version__ = "0.1.0"

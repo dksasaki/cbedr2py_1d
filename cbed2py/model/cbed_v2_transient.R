@@ -22,13 +22,34 @@
 #   - Compaction uses v.0 = w (as v2), not v.inf = w.
 #   - Forcing comes from the `forc` data.frame argument instead of the
 #     global bc.data / bc.fn.btm().
-#   - k1-k3 and Db/bioirrigation use the instantaneous J.OM(t) by default.
-#     k.use.J.mean = 1 / mix.use.J.mean = 1 use the long-term mean J.OM
-#     (the constant pars$J.OM) instead, as generic_CBED.F90 does with
-#     use_jpoc_mean_for_k / use_jpoc_mean_for_mixing = .true. (its defaults).
+#   - The POC flux J used by k1-k3 (J.mode.k), bioturbation (J.mode.Db) and
+#     bioirrigation (J.mode.irr) is chosen separately for each process:
+#       0 = instantaneous forcing J.OM(t) (default)
+#       1 = long-term mean, the constant pars$J.OM (as generic_CBED.F90 with
+#           use_jpoc_mean_for_k / use_jpoc_mean_for_mixing = .true.)
+#       2 = trailing mean of J.OM(t) over the previous J.avg.days days
+#           (exact mean of the linearly interpolated forcing; before the
+#           first forcing time J.OM is held at its first value)
+#     The deposition flux always follows J.OM(t).
 #   - switch.oxy.dependent.k is not used: the rate constants are always
 #     k.adj.denit, k.adj.anoxia, k1.0 ... k3.0. v2's "switch = 0" branch
 #     is k2.0 = 1.3e-4, k3.0 = 0, k.adj.denit = k.adj.anoxia = 1.
+#   - Coefficients as generic_CBED.F90 (COBALT), for consistency with the
+#     Fortran code:
+#     * free-solution diffusion coefficients linear in temperature, no
+#       salinity dependence (was marelac::diffcoeff(S, temp)):
+#          D0 = (a + b*temp) [m2 yr-1] -> x 1e4 [cm2 yr-1]
+#               O2    a = 0.031558  b = 0.001428
+#               NO3   a = 0.030863  b = 0.001153
+#               NH4   a = 0.030926  b = 0.001225
+#               HCO3  a = 0.015179  b = 0.000795   (DIC and TAlk)
+#               H2S   a = 0.028938  b = 0.001314   (ODU)
+#     * anammox stoichiometry 5 NH4+ + 3 NO3- -> 4 N2:
+#          dNO3 - 0.6*R.ana (was - R.ana), R.TAlk - 0.4*R.ana (was no term),
+#          N loss 1.6*R.ana in tot_denit and anammox (was 2*R.ana);
+#          dNH4 keeps - R.ana
+#     Not changed (formulation): NH4 adsorption, I0 = 0 for anoxic bottom
+#     water, ODU.w as a parameter, J.OM modes.
 #
 # Forcing (argument `forc` of cbed_model_t)
 #   data.frame with a `time` column [yr] and any of
@@ -57,12 +78,14 @@ cbed_t_default_coefs <- function() {
     k.exp        = 0.85,
     k.adj.denit  = 0.1,     # 1 = no effect of denitrification on decay
     k.adj.anoxia = 0.001,   # 1 = no effect of anoxia on decay
-    k.use.J.mean = 0,       # 1: k from the constant pars$J.OM (long-term mean, as
-                            #    generic_CBED.F90 with use_jpoc_mean_for_k = .true.)
-                            # 0: k from the instantaneous forcing J.OM(t)
-    mix.use.J.mean = 0,     # 1: Db and bioirrigation from the constant pars$J.OM
-                            #    (generic_CBED.F90, use_jpoc_mean_for_mixing = .true.)
-                            # 0: from the instantaneous forcing J.OM(t)
+    # POC flux J used by each J.OM-dependent process:
+    #   0 = instantaneous forcing J.OM(t)
+    #   1 = long-term mean, the constant pars$J.OM
+    #   2 = trailing mean of J.OM(t) over the previous J.avg.days days
+    J.mode.k     = 0,       # k1-k3
+    J.mode.Db    = 0,       # bioturbation
+    J.mode.irr   = 0,       # bioirrigation
+    J.avg.days   = 7,       # window of the trailing mean [d]
     # bioturbation (Archer 2002): Db = Db.coef * J.OM^Db.exp * exp(-(z/Db.xL)^2) * O2/(O2+Db.O2.half)
     Db.coef      = 0.0232,
     Db.exp       = 0.85,
@@ -87,6 +110,23 @@ cbed_t_fill_coefs <- function(pars) {
 }
 
 
+# Trailing mean of the linear interpolant of (t, J), held constant past the
+# ends (as approxfun rule = 2):   Jbar(s) = 1/tau * integral_{s-tau}^{s} J(u) du
+# Exact: the integral of a piecewise-linear function is computed piecewise.
+make_trailing_mean <- function(t, J, tau) {
+  n  <- length(t)
+  Jf <- approxfun(t, J, rule = 2)
+  C  <- c(0, cumsum(diff(t) * (J[-n] + J[-1]) / 2))   # integral from t[1] to t[i]
+  Cf <- function(s) {                                 # integral from t[1] to s
+    s1 <- min(max(s, t[1]), t[n])
+    i  <- findInterval(s1, t, rightmost.closed = TRUE)
+    C[i] + (s1 - t[i]) * (J[i] + Jf(s1)) / 2 +         # inside [t[1], t[n]]
+      (s - s1) * Jf(s)                                 # constant J outside
+  }
+  function(s) (Cf(s) - Cf(s - tau)) / tau
+}
+
+
 # builds the grid and the right-hand side; used by the ss and transient runs
 cbed_t_setup <- function(pars, forc = NULL) {
 
@@ -100,6 +140,24 @@ cbed_t_setup <- function(pars, forc = NULL) {
   # value of forcing `nm` at time t (constant parameter if not forced)
   fv <- function(nm, t) {
     if (is.null(forc_fun[[nm]])) pars[[nm]] else forc_fun[[nm]](t)
+  }
+
+  # trailing mean of J.OM (mode 2)
+  tau <- pars$J.avg.days / 365
+  if (is.null(forc_fun[["J.OM"]])) {
+    J.avg.fun <- function(s) pars$J.OM            # constant forcing (and steady state)
+  } else if (tau > 0) {
+    J.avg.fun <- make_trailing_mean(forc$time, forc$J.OM, tau)
+  } else {
+    J.avg.fun <- forc_fun[["J.OM"]]               # zero window = instantaneous
+  }
+  # POC flux used by a process, according to its mode
+  J.for <- function(mode, t, J.inst) {
+    switch(as.character(mode),
+           "0" = J.inst,
+           "1" = pars$J.OM,
+           "2" = J.avg.fun(t),
+           stop("J.mode.* must be 0, 1 or 2, got ", mode))
   }
 
   # 2. time-invariant setup (identical to cbed_v2_func.R) --------------------
@@ -126,8 +184,6 @@ cbed_t_setup <- function(pars, forc = NULL) {
       DIC      <- state[(7*N+1):(8*N)]
       TAlk     <- state[(8*N+1):(9*N)]
 
-      J.OM.mean <- J.OM      # constant value from pars (long-term mean)
-
       # time-varying boundary conditions
       # (these locals shadow the constant values coming from `pars`)
       J.OM   <- fv("J.OM",   times)
@@ -151,24 +207,25 @@ cbed_t_setup <- function(pars, forc = NULL) {
       J.OM2 <- f.OM2*J.OM
       J.OM3 <- f.OM3*J.OM
 
+      #POC flux used for reactivity, bioturbation and bioirrigation
+      J.k   <- J.for(J.mode.k,   times, J.OM)
+      J.Db  <- J.for(J.mode.Db,  times, J.OM)
+      J.irr <- J.for(J.mode.irr, times, J.OM)
+
       #reactivity as function of total POC flux
-      J.k <- if (k.use.J.mean == 1) J.OM.mean else J.OM
       k1 <- k1.0*(J.k)^k.exp
       k2 <- k2.0*(J.k)^k.exp
       k3 <- k3.0*(J.k)^k.exp
 
-      #POC flux used for bioturbation and bioirrigation
-      J.mix <- if (mix.use.J.mean == 1) J.OM.mean else J.OM
-
       #bioturbation | Db as Archer 2002
-      Db.0 <- Db.coef*(J.mix)^Db.exp
+      Db.0 <- Db.coef*(J.Db)^Db.exp
       Db.grid <- setup.prop.1D(xy = cbind(x=grid$x.mid,
                                           y=(Db.0*exp(-(grid$x.mid/Db.xL)^2)*((O2.w*1000)/(O2.w*1000+Db.O2.half)))
       ), grid=grid)
 
       #bioirrigation as Archer 2002, with 'if' to handle complete anoxia
       if (O2.w > 0) {
-        I0 <- 11*(((atan((5*J.mix-400)/400))/pi)+0.5) - 0.9 + 20*((O2.w*1000)/(O2.w*1000+10))*exp(-O2.w*1000/10)*(J.mix/(J.mix+30))
+        I0 <- 11*(((atan((5*J.irr-400)/400))/pi)+0.5) - 0.9 + 20*((O2.w*1000)/(O2.w*1000+10))*exp(-O2.w*1000/10)*(J.irr/(J.irr+30))
       } else {
         I0 <- 0
       }
@@ -176,8 +233,13 @@ cbed_t_setup <- function(pars, forc = NULL) {
                                       I0*exp(-(grid$x.mid/irr.xL)^2)),
                              grid = grid)
 
-      # diffusion terms
-      D <- diffcoeff(S=S, t=temp, species=c("O2","NO3","NH4","Fe","SO4","H2S","CH4","Mn","HCO3"))*100^2*365*86400
+      # diffusion terms: free-solution coefficients of generic_CBED.F90,
+      # (a + b*temp) [m2 yr-1] -> cm2 yr-1
+      D <- list(O2   = (0.031558 + 0.001428*temp)*1e4,
+                NO3  = (0.030863 + 0.001153*temp)*1e4,
+                NH4  = (0.030926 + 0.001225*temp)*1e4,
+                HCO3 = (0.015179 + 0.000795*temp)*1e4,
+                H2S  = (0.028938 + 0.001314*temp)*1e4)
 
       # Correct for tortuosity
       Do2.grid  <- setup.prop.1D(xy=cbind(grid$x.mid,
@@ -237,11 +299,11 @@ cbed_t_setup <- function(pars, forc = NULL) {
       #ODU burial as solid (pyrite burial) #Soetaert et al 1996
       OduDepo <- (R.ODU.1+R.ODU.2+R.ODU.3)*min(1, odu.bur.a*(w)^odu.bur.b) *switch.odu.burial
 
-      #TAlk generation and consumption (v2: -1*R.ODUox)
+      #TAlk generation and consumption (v2: -1*R.ODUox; F90: -0.4*R.ana)
       R.TAlk <- rNC*svf.grid$mid/por.grid$mid*(R.O2.1+R.O2.2+R.O2.3) +
         (0.8+rNC)*svf.grid$mid/por.grid$mid*(R.NO3.1+R.NO3.2+R.NO3.3) +
         (1+rNC)*svf.grid$mid/por.grid$mid*(R.ODU.1+R.ODU.2+R.ODU.3) -
-        2*R.NOx - 1*R.ODUox
+        2*R.NOx - 1*R.ODUox - 0.4*R.ana
 
       #transport
       trans.OM1 <- tran.1D(C=OM1, flux.up = J.OM1, D=Db.grid, v=v.grid, dx=grid,VF=svf.grid)
@@ -267,7 +329,7 @@ cbed_t_setup <- function(pars, forc = NULL) {
                                                                    rNC.1*R.ODU.1+rNC.2*R.ODU.2+rNC.3*R.ODU.3) -
         por.grid$mid/phi.N$mid*(R.NOx+R.ana) + alpha$mid*(NH4.w-NH4)
 
-      dNO3 <- trans.NO3$dC - svf.grid$mid/por.grid$mid*0.8*(R.NO3.1+R.NO3.2+R.NO3.3) + R.NOx - R.ana + alpha$mid*(NO3.w-NO3)
+      dNO3 <- trans.NO3$dC - svf.grid$mid/por.grid$mid*0.8*(R.NO3.1+R.NO3.2+R.NO3.3) + R.NOx - 0.6*R.ana + alpha$mid*(NO3.w-NO3)
 
       dODU <- trans.ODU$dC + svf.grid$mid/por.grid$mid*(R.ODU.1+R.ODU.2+R.ODU.3) - R.ODUox - svf.grid$mid/por.grid$mid*OduDepo + alpha$mid*(ODU.w-ODU)
 
@@ -282,8 +344,8 @@ cbed_t_setup <- function(pars, forc = NULL) {
                   o2_flux   = trans.O2$flux.up  + sum(por.grid$mid*grid$dx*alpha$mid*(O2.w-O2)),
                   nh4_flux  = trans.NH4$flux.up + sum(por.grid$mid*grid$dx*alpha$mid*(NH4.w-NH4)),
                   no3_flux  = trans.NO3$flux.up + sum(por.grid$mid*grid$dx*alpha$mid*(NO3.w-NO3)),
-                  tot_denit = 0.8*sum(svf.grid$mid*grid$dx*(R.NO3.1+R.NO3.2+R.NO3.3)) + 2*sum(por.grid$mid*grid$dx*R.ana),
-                  anammox   = 2*sum(por.grid$mid*grid$dx*R.ana),
+                  tot_denit = 0.8*sum(svf.grid$mid*grid$dx*(R.NO3.1+R.NO3.2+R.NO3.3)) + 1.6*sum(por.grid$mid*grid$dx*R.ana),
+                  anammox   = 1.6*sum(por.grid$mid*grid$dx*R.ana),
                   dic_flux  = trans.DIC$flux.up + sum(por.grid$mid*grid$dx*alpha$mid*(DIC.w-DIC)),
                   OM_flux   = trans.OM1$flux.up+trans.OM2$flux.up+trans.OM3$flux.up,
                   OM_burial = trans.OM1$flux.down+trans.OM2$flux.down+trans.OM3$flux.down,
@@ -294,7 +356,10 @@ cbed_t_setup <- function(pars, forc = NULL) {
                   oxic_remin    = sum(svf.grid$mid*grid$dx*(R.O2.1+R.O2.2+R.O2.3)),
                   OC_storage    = sum((OM1+OM2+OM3)*svf.grid$mid*grid$dx)/1e6*1e4,
                   Db_top    = Db.grid$mid[1],
-                  alpha_top = alpha$mid[1]
+                  alpha_top = alpha$mid[1],
+                  J_k   = J.k,     # POC flux used by k1-k3
+                  J_Db  = J.Db,    # ... by bioturbation
+                  J_irr = J.irr    # ... by bioirrigation
       ))
     })
   }

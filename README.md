@@ -59,7 +59,7 @@ changes to the code take effect without reinstalling.
 cd cbed2py_1d
 pixi install          # environment in .pixi/, installs cbed2py
 pixi run setup-r      # once: ReacTran and marelac from CRAN (not on conda-forge)
-pixi run test         # the four checks
+pixi run test         # the five checks
 ```
 
 Then use it with `pixi run python my_script.py`, or open a shell in the
@@ -226,19 +226,26 @@ The transient wrapper does not compute them, so pass `f.OM1-3` yourself.
 **From `cbed_t_default_coefs()` (`cbed2py/model/cbed_v2_transient.R`):** constants
 that are hard-coded in `cbed_v2_func.R`, with the v2 values as defaults.
 
-The two flags use the `generic_CBED.F90` names and are Python bools. Passing
-anything other than `True`/`False` raises a `TypeError`. The wrapper passes
-them to R as integers `1`/`0` under the R names `k.use.J.mean` and
-`mix.use.J.mean`. Note that the Fortran default is `.true.` for both; the
-default here is `False` for both.
+The three `jpoc_mode_*` parameters pick the POC flux `J` used by reactivity,
+bioturbation and bioirrigation, separately. Each is one of the strings
+`'instantaneous'` (the forcing `J.OM(t)`, default), `'longterm_mean'` (the
+constant `params['J.OM']`, the role of the Fortran `cbed_jpoc_mean`) or
+`'trailing_mean'` (the mean of `J.OM(t)` over the previous `J.avg.days`
+days). Any other value raises a `ValueError`. The wrapper passes them to R as
+integer codes 0/1/2 under the R names `J.mode.k`, `J.mode.Db`, `J.mode.irr`.
+The Fortran flags `use_jpoc_mean_for_k = .true.` /
+`use_jpoc_mean_for_mixing = .true.` (its defaults) correspond to
+`'longterm_mean'`.
 
 | name | default | used in |
 |---|---|---|
 | `k1.0`, `k2.0`, `k3.0` | 0.15, 1.5e-3, 0.9e-4 | `k_i = k_i.0 · J^k.exp` [yr⁻¹] |
 | `k.exp` | 0.85 | same |
 | `k.adj.denit`, `k.adj.anoxia` | 0.1, 0.001 | decay factor under denitrification / anoxia |
-| `use_jpoc_mean_for_k` | `False` | `True`: `J` in `k_i` is the long-term mean (the constant `params['J.OM']`); `False`: the instantaneous `J.OM(t)` |
-| `use_jpoc_mean_for_mixing` | `False` | the same choice for `J` in `Db0` and `I0` |
+| `jpoc_mode_reactivity` | `'instantaneous'` | `J` in `k_i` |
+| `jpoc_mode_bioturbation` | `'instantaneous'` | `J` in `Db0` |
+| `jpoc_mode_bioirrigation` | `'instantaneous'` | `J` in `I0` |
+| `J.avg.days` | 7 d | window of `'trailing_mean'` |
 | `Db.coef`, `Db.exp` | 0.0232, 0.85 | `Db0 = Db.coef · J^Db.exp` |
 | `Db.xL`, `Db.O2.half` | 8 cm, 20 µM | `Db = Db0 · exp(−(z/Db.xL)²) · O2/(O2 + Db.O2.half)` |
 | `irr.xL` | 1.8 cm | `alpha = I0 · exp(−(z/irr.xL)²)` |
@@ -317,28 +324,33 @@ time axis before building `forcing`.
 - `switch.oxy.dependent.k` is ignored: the rate constants always come from
   `k1.0`–`k3.0` and `k.adj.*` (v2's active branch, which is also the Fortran
   formulation). v2's inactive branch (`k3 = 0`) is not reproduced.
-- **Mean or instantaneous POC flux.** By default
-  (`use_jpoc_mean_for_k = False`, `use_jpoc_mean_for_mixing = False`),
-  `k1`–`k3`, bioturbation and bioirrigation all follow `J.OM(t)`. Setting a
-  flag to `True` makes that part use the long-term mean (the constant
-  `params['J.OM']`, in the role of the Fortran `cbed_jpoc_mean`). The
-  Fortran default is `.true.` for both. The deposition flux always follows
-  `J.OM(t)`.
+- **POC flux for reactivity and mixing.** By default `k1`–`k3`,
+  bioturbation and bioirrigation all follow `J.OM(t)`. Each can instead use
+  the long-term mean (`'longterm_mean'`, the constant `params['J.OM']`) or
+  the trailing mean over the previous `J.avg.days` days (`'trailing_mean'`),
+  through `jpoc_mode_reactivity`, `jpoc_mode_bioturbation` and
+  `jpoc_mode_bioirrigation`. The trailing mean is the exact mean of the
+  linearly interpolated forcing. Before the first forcing time, `J.OM` is
+  held at its first value, as for the instantaneous forcing. With constant
+  forcing (and in the steady state) all three modes give `params['J.OM']`.
+  The `J` actually used is returned as the diagnostics `J_k`, `J_Db`,
+  `J_irr`. The deposition flux always follows `J.OM(t)`.
 
 With constant forcing, the transient equations have the same steady state as
 `cbed_model()`.
 
 ## 10. Checks
 
-`pixi run test` (about 1.5 min). Results on 2026-11-06, default
+`pixi run test` (about 1.5 min). Results on 2026-11-09, default
 parameters:
 
 | check | result |
 |---|---|
 | 1. steady state vs `cbed_model()` of `cbed_v2_func.R` | max relative difference ≤ 8.5e-10 on all 9 profiles; `o2_flux` 379.542, `dic_flux` −342.368, `OM_burial` 60.861 in both |
 | 2. constant forcing for 1 yr, from the steady state | max relative drift ≤ 2.9e-11 |
-| 3. `J.OM` · (1 + 0.5 sin 2πt), 2 yr daily, default flags (`False`) | 26 s; `OM_flux` follows the forcing (202–605); `o2_flux` 268–474; `dic_flux` −440 to −234; `tot_denit` 16.4–20.5 |
+| 3. `J.OM` · (1 + 0.5 sin 2πt), 2 yr daily, default modes (`'instantaneous'`) | 26 s; `OM_flux` follows the forcing (202–605); `o2_flux` 268–474; `dic_flux` −440 to −234; `tot_denit` 16.4–20.5 |
 | 4. `k2.0` × 2 | surface OM2 2222 → 1360; `o2_flux` 379.5 → 389.3 |
+| 5. `J` modes, monthly `J.OM` cycle, 3 months daily: reactivity `'trailing_mean'` (7 d), bioturbation `'longterm_mean'`, bioirrigation `'instantaneous'` | `J_k` matches a numpy 7-day average to 7e-5 (reference grid resolution); `J_Db` = `J.OM`, `J_irr` = `J.OM(t)` exactly; `J.OM(t)` 202–605, trailing mean 220–587 |
 
 ## 11. Disclaimer
 Parts of the wrapper were written with assistance from Claude (Anthropic).
