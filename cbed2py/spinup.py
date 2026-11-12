@@ -348,7 +348,7 @@ def _gmres(Av, b, m, rtol):
 
 def newton_krylov_spinup(params, forcing, yini=None, period=1.0, n_periods=1,
                          n_sub=12, max_newton=10, gmres_iter=20, eta=0.1,
-                         fd_rel=1e-3, scale_floor=1e-3, tol_imbalance=0.05,
+                         fd_rel=1e-3, scale_floor=1e-3, scale_abs=1e-3, tol_imbalance=0.05,
                          tol_f=3e-5, max_backtrack=4, checkpoint=None,
                          verbose=True):
     """
@@ -368,8 +368,11 @@ def newton_krylov_spinup(params, forcing, yini=None, period=1.0, n_periods=1,
 
     Implementation
       - scaled unknowns x = y / s, s = max(|y_ini|, scale_floor * max|y_ini|
-        of that species): every unknown is O(1), so GMRES and the norms are
-        not dominated by OM2 (~1e3-1e4) or blind to O2 (~0 at depth).
+        of that species, scale_abs): every unknown is O(1), so GMRES and the
+        norms are not dominated by OM2 (~1e3-1e4) or blind to O2 (~0 at
+        depth). scale_abs (state units) stops a species that is ~0
+        everywhere at the start (e.g. ODU in an oxic profile) from getting a
+        ~1e-11 scale and swamping ||G||.
       - finite-difference step: RMS perturbation of x = fd_rel. It must be
         well above the solver noise of Phi (lsoda rtol = atol = 1e-6), so
         fd_rel ~ 1e-4 - 1e-3; too small gives noisy J v, too large adds
@@ -412,7 +415,7 @@ def newton_krylov_spinup(params, forcing, yini=None, period=1.0, n_periods=1,
     s = np.empty(n)
     for sl in _slices(N).values():
         ys = np.abs(y0[sl])
-        s[sl] = np.maximum(ys, scale_floor * max(ys.max(), 1e-30))
+        s[sl] = np.maximum(ys, max(scale_floor * ys.max(), scale_abs))
     nonneg = y0 >= 0
     n_runs = [0]
 
@@ -475,8 +478,19 @@ def newton_krylov_spinup(params, forcing, yini=None, period=1.0, n_periods=1,
                 break
             lam /= 2
         else:
-            if verbose:
-                print(f'  line search: no sufficient decrease, taking lambda={best[3]:g}')
+            if np.linalg.norm(best[1]) < np.linalg.norm(F):
+                if verbose:
+                    print(f'  line search: no sufficient decrease, taking lambda={best[3]:g}')
+            else:
+                # every trial made ||G|| worse: the Newton direction is not
+                # usable here (noisy J v on the slow modes, or the >= 0
+                # clipping). Fall back to one plain period (Picard step,
+                # y <- Phi(y)), which always moves towards the periodic state.
+                xn = clip(x + F)
+                Fn, dsn = shoot(xn)
+                best = (xn, Fn, dsn, 0.0)
+                if verbose:
+                    print('  line search failed, taking a plain period (Picard) step')
         x, F, ds, lam = best
         rec['step'] = lam
         history.append(rec)

@@ -265,6 +265,7 @@ The Fortran flags `use_jpoc_mean_for_k = .true.` /
 | `o2_flux`, `nh4_flux`, `no3_flux`, `dic_flux`, `odu_flux`, `talk_flux` | (time) | µmol cm⁻² yr⁻¹, positive into the sediment |
 | `OM_flux`, `OM_burial`, `tot_remin`, `oxic_remin`, `tot_denit`, `anammox`, `nitrification` | (time) | µmol cm⁻² yr⁻¹ |
 | `OC_storage` | (time) | as in `cbed_v1_func.R` |
+| `OM1_storage`, `OM2_storage`, `OM3_storage` | (time) | the same inventory per OM pool (they sum to `OC_storage`) |
 | `Db_top`, `alpha_top` | (time) | bioturbation, bioirrigation at the top layer |
 | `forcing_<name>` | (time) | the forcing the model saw, at the output times |
 

@@ -1,0 +1,20 @@
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# model output / spin-up checkpoints
+*.nc
+*.npz
+
+# jupyter
+.ipynb_checkpoints/
+
+# cluster logs
+slurm*.out
