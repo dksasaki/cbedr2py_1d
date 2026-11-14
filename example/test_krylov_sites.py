@@ -59,7 +59,7 @@ f_year = {'time': t_year,
           'J.OM': params['J.OM'] * (1 + 0.5*np.sin(2*np.pi*t_year)),
           'temp': params['temp'] + temp_amp[site]*np.sin(2*np.pi*(t_year - 0.6))}
 
-n_periods = 10 if site in ('site4', 'site5') else 1   # slow sites: longer shots
+n_periods = 10 if site in ('site4', 'site5') else 5   # slow sites: longer shots
 
 
 # spin-up to the periodic state (Newton-Krylov)
