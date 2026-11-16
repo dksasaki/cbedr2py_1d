@@ -55,20 +55,28 @@ def periodic_forcing(forcing, t_start, t_end, period=1.0, lead=None):
     lead    : forcing kept before t_start, so that the trailing mean of
               J.OM (mode 'trailing_mean') sees periodic forcing from the
               first day. Default: one period.
-    The sample spacing of the input is kept.
+    The input samples are repeated exactly (same phases and values, shifted
+    by whole periods), with one sample beyond each end so the model's linear
+    interpolation covers [t_start - lead, t_end]. Resampling onto another
+    grid would pass the model's curve through averages of neighbouring
+    samples, which flattens sparse (e.g. monthly) forcing.
     """
     if lead is None:
         lead = period
     tp = np.asarray(forcing['time'], dtype=float) % period
     order = np.argsort(tp)
     tp, keep = np.unique(tp[order], return_index=True)
-    dtf = np.median(np.diff(tp)) if tp.size > 1 else period / 365
-    t = np.arange(t_start - lead, t_end + dtf / 2, dtf)
+    t0, t1 = t_start - lead, t_end
+    k = np.arange(np.floor(t0 / period) - 1, np.ceil(t1 / period) + 1)
+    t = (k[:, None] * period + tp[None, :]).ravel()
+    i0 = max(np.searchsorted(t, t0, side='right') - 1, 0)   # last sample <= t0
+    i1 = min(np.searchsorted(t, t1, side='left'), t.size - 1)  # first sample >= t1
+    t = t[i0:i1 + 1]
     out = {'time': t}
     for v in FORCING:
         if v in forcing:
             fp = np.asarray(forcing[v], dtype=float)[order][keep]
-            out[v] = np.interp(t, tp, fp, period=period)
+            out[v] = np.tile(fp, k.size)[i0:i1 + 1]
     return out
 
 
@@ -349,7 +357,7 @@ def _gmres(Av, b, m, rtol):
 def newton_krylov_spinup(params, forcing, yini=None, period=1.0, n_periods=1,
                          n_sub=12, max_newton=10, gmres_iter=20, eta=0.1,
                          fd_rel=1e-3, scale_floor=1e-3, scale_abs=1e-3, tol_imbalance=0.05,
-                         tol_f=3e-5, max_backtrack=4, checkpoint=None,
+                         tol_f=1e-4, max_backtrack=4, checkpoint=None,
                          verbose=True):
     """
     Spin up CBED to its periodic state with Jacobian-free Newton-Krylov.

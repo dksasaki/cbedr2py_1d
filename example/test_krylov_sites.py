@@ -60,12 +60,13 @@ f_year = {'time': t_year,
           'temp': params['temp'] + temp_amp[site]*np.sin(2*np.pi*(t_year - 0.6))}
 
 n_periods = 10 if site in ('site4', 'site5') else 5   # slow sites: longer shots
+TOL_F = 1e-4    # RMS relative state change per year; drift over 100 yr <~ 100*TOL_F (~1%)
 
 
 # spin-up to the periodic state (Newton-Krylov)
 t0 = time.time()
 y, hist, ds_last = newton_krylov_spinup(params, f_year, n_periods=n_periods, max_newton=10,
-                                        checkpoint=f'spinup_nk_{site}_{MODE}.npz')
+                                        tol_f=TOL_F, checkpoint=f'spinup_nk_{site}_{MODE}.npz')
 print(f'{site}: spin-up {hist[-1]["runs"] * n_periods} model years, {time.time() - t0:.0f} s')
 if not hist[-1]['converged']:
     print(f'WARNING: not converged; restart with yini=np.load("spinup_nk_{site}_{MODE}.npz")["y"]')
